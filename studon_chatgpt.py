@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
-import sys
-import time
 import openai
 import os
-import threading
 import queue
+import sys
+import time
+import threading
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
