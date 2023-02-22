@@ -4,8 +4,8 @@ import argparse
 import openai
 import os
 import queue
+from queue import Empty
 import sys
-import time
 import threading
 
 from selenium import webdriver
@@ -21,6 +21,7 @@ QUESTION_OUTER_CLASS = 'ilc_question_Standard'
 # Variables
 input_queue = queue.Queue()
 
+
 def add_input(input_queue):
     while True:
         input_queue.put(input())
@@ -35,40 +36,6 @@ def parse_credentials():
     args = parser.parse_args()
     return (args.username, args.password, args.openai_key)
 
-
-def ask_chatgpt(question, context=''):
-    print("=========")
-    print("Question: ", flush=True)
-    print("=========")
-    print(question)
-    model_engine = "text-davinci-003"
-
-    prompt = "context:" + context + "\n\n" + "prompt:" + question
-    prompt = prompt.strip()
-
-    completion = openai.Completion.create(
-        engine=model_engine,
-        prompt=prompt,
-        max_tokens=2048,
-        n=1,
-        temperature=1,
-        stream=True)
-    # Model Response
-    print("=========")
-    print("ChatGPT: ", flush=True)
-    print("=========")
-    response = ''
-    for resp in completion:
-        streamed = resp.choices[0].text
-        print(streamed, end="", flush=True)
-        response += streamed
-
-    if len(response) == 0:
-        print("\n\n Tell ChatGPT what to do:", end=' ', flush=True)
-    else:
-        print("\n\n Ask ChatGPT:", end=' ', flush=True)
-    context += "\n".join([context, question, response])
-    return (context, response)
 
 
 def build_chatgpt_question(question_standard):
@@ -107,6 +74,67 @@ def build_chatgpt_question(question_standard):
             question_text = question_standard.text
     return question_text
 
+
+class QuestionThread(threading.Thread):
+
+    def __init__(self, question_element, *args, **kwargs):
+        super(QuestionThread, self).__init__(*args, *kwargs, daemon=True)
+        self.question_element = question_element
+        self.stop_event = threading.Event()
+
+    def ask_chatgpt(self, question, context=''):
+        print("=========\n%s\n=========\n" % "Question: ", flush=True)
+        print(question, flush=True)
+        model_engine = "text-davinci-003"
+
+        prompt = "context:" + context + "\n\n" + "prompt:" + question
+        prompt = prompt.strip()
+
+        completion = openai.Completion.create(
+            engine=model_engine,
+            prompt=prompt,
+            max_tokens=2048,
+            n=1,
+            temperature=1,
+            stream=True)
+        # Model Response
+        print("=========\n%s\n=========\n" % "ChatGPT: ", flush=True)
+
+        response = ''
+        for resp in completion:
+            streamed = resp.choices[0].text
+            print(streamed, end="", flush=True)
+            response += streamed
+            # Abort if stop_event is set
+            if self.stop_event.is_set():
+                return ('', '')
+
+        if len(response) == 0:
+            print("\n\n Tell ChatGPT what to do:", end=' ', flush=True)
+        else:
+            print("\n\n Ask ChatGPT:", end=' ', flush=True)
+
+        context += "\n".join([context, question, response])
+        return (context, response)
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        os.system('clear')
+        question = build_chatgpt_question(self.question_element)
+        context, _ = self.ask_chatgpt(question)
+        while not self.stop_event.is_set():
+            try:
+                # Poll the input queue in interval
+                question = input_queue.get(timeout=1)
+                context, _ = self.ask_chatgpt(question, context)
+            except Empty:
+                pass
+        input_queue.queue.clear()
+
+
+
 if __name__ == '__main__':
     username, password, openai_api_key = parse_credentials()
 
@@ -129,43 +157,29 @@ if __name__ == '__main__':
 
     driver.find_element(By.NAME, "cmd[doStandardAuthentication]").click()
 
-    current_page = driver.current_url
-    question_answered = False
 
-    question_element = None
-    context = ''
+    # Main Loop
+    wait_stale = WebDriverWait(driver, timeout=100, poll_frequency=1)
+    wait_question = WebDriverWait(driver, timeout=100, poll_frequency=1
+                                    , ignored_exceptions=[ElementNotVisibleException])
 
+    questionThread = None
     while True:
-        if question_element is not None:
-            wait_stale = WebDriverWait(driver, timeout=1)
-            try:
-                wait_stale.until(EC.staleness_of(question_element))
-                # Question has become stale
-                question_element = None
-                context = ''
-                input_queue.queue.clear()
-                os.system('clear')
-            except TimeoutException:
-                if not input_queue.empty():
-                    user_input = input_queue.get()
-                    context, _ = ask_chatgpt(user_input, context)
-                else:
-                    time.sleep(1)
-        else:
-            wait_question = WebDriverWait(driver, timeout=100, poll_frequency=1
-                                          , ignored_exceptions=[ElementNotVisibleException])
-            try:
-                wait_question.until(EC.presence_of_element_located((By.CLASS_NAME, 'ilc_question_Standard')))
-
+        try:
+            if questionThread is not None:
+                # Wait until Element is stale
+                wait_stale.until(EC.staleness_of(questionThread.question_element))
+                # Wait until Thread returned
+                questionThread.stop()
+                questionThread.join()
+                questionThread = None
+            else:
+                wait_question.until(EC.presence_of_element_located((By.CLASS_NAME, QUESTION_OUTER_CLASS)))
                 question_element = driver.find_element(By.CLASS_NAME, QUESTION_OUTER_CLASS)
+                questionThread = QuestionThread(question_element)
+                questionThread.start()
 
-                question = build_chatgpt_question(question_element)
-                # Ask chatgpt
-                context, _ = ask_chatgpt(question)
-
-            except TimeoutException:
-                continue
-
-
+        except TimeoutException:
+            pass
 
 
