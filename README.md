@@ -11,6 +11,7 @@ Small python script that shadows your activity on *Studon Exam* (at FAU) and par
 The response from ChatGPT is then printed, so you can decide what to do with it.  
 Read the [Limitations](#limitations) sections for more info.
 
+![GIF](./studon_chatgpt.gif)
 
 ## Limitations
 
